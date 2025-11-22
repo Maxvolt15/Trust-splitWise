@@ -1,0 +1,320 @@
+\documentclass[14pt]{extreport}
+\usepackage[margin=3.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{setspace}
+\usepackage{amsmath, amssymb}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{newtxtext,newtxmath}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\raggedbottom
+\setstretch{1.1}
+
+\titleformat{\chapter}{\LARGE\bfseries}{\thechapter.}{1em}{}
+\titlespacing{\chapter}{0pt}{25pt}{10pt}
+\titleformat{\section}[hang]{\Large\bfseries}{}{0pt}{}
+\renewcommand{\thesection}{\arabic{section}}
+
+% Define custom colors
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+% Code listing style
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+% Minimal Solidity language definition for listings
+\lstdefinelanguage{Solidity}{
+  keywords={pragma, solidity, contract, library, interface, struct, enum, function, returns, event, modifier, public, private, external, internal, pure, view, payable, virtual, override, immutable, storage, memory, calldata, if, else, for, while, do, return, import, using, assembly, emit, require, revert, mapping, new, delete, try, catch},
+  sensitive=true,
+  comment=[l]{//},
+  commentstyle=\color{codegreen},
+  morecomment=[s]{/*}{*/},
+  stringstyle=\color{codepurple},
+  morestring=[b]",
+  morestring=[s]{'}{'},
+  basicstyle=\ttfamily\footnotesize
+}
+
+\begin{document}
+
+\begin{titlepage}
+  \centering
+  \includegraphics[width=0.6\textwidth]{images/Institutional-Partner-University-of-Pisa.jpg}
+  
+  \vspace{1.5cm}
+  {\Huge \textbf{Report on SplitWise - Trust Project} \par}
+  \vspace{0.5cm}
+  {\large Peer to Peer and Blockchain, 2024-2025 \par}
+  
+  \vspace{2cm}
+  \begin{tabular}{@{}ll@{}}
+    \large\textbf{Professor:} & \large 
+Laura Emilia Maria Ricci \\
+    & \\
+    \large\textbf{Student:} & \large Suranjan Kumar Ghosh \\
+  \end{tabular}
+  
+  \vfill
+  {\large \today \par}
+\end{titlepage}
+
+
+% --- CHAPTER 1: INTRODUCTION ---
+\chapter{Introduction}
+Managing shared expenses among groups often suffers from a lack of transparency and cumbersome settlement processes. The Trust-Splitwise project addresses this by implementing a decentralized expense-sharing application on the Ethereum blockchain. The suite, comprised of \texttt{Splitwise.sol} and \texttt{TrustToken.sol}, leverages smart contracts to provide a secure, transparent, and efficient system for collaborative finance.
+\newline
+\newline
+By moving the core logic on-chain, the system offers a tamper-proof history of all transactions. To overcome the high gas costs of complex computations, the project employs a hybrid model where a computationally intensive debt simplification algorithm runs off-chain, with its results being securely verified and applied on-chain. This report details the architectural decisions, security model, and performance analysis of this implementation.
+
+\clearpage
+
+\chapter{Architectural Design}
+\section{Contracts Overview}
+\begin{itemize}
+  \item \textbf{TrustToken.sol}: ERC-20 compliant token contract
+  \begin{itemize}
+    \item Fixed ETH-to-token minting rate
+    \item Reentrancy protection for mint function
+  \end{itemize}
+  
+  \item \textbf{Splitwise.sol}: Core expense management
+  \begin{itemize}
+    \item Group creation and membership management
+    \item Expense registration with split types
+    \item Debt simplification workflow
+    \item Token-based settlement
+  \end{itemize}
+\end{itemize}
+
+\section{Group Lifecycle}
+\begin{enumerate}
+  \item \textbf{Creation}: Caller invokes \texttt{createGroup()}, becoming initial member
+  \item \textbf{Joining}: Via \texttt{inviteMember()} (existing members) or \texttt{joinGroup()} (open groups with zero debt)
+  \item \textbf{Locking}: Activated during debt simplification to prevent state changes
+  \item \textbf{Debt Simplification}: Off-chain computation + on-chain verification
+  \item \textbf{Settlement}: Debt payment via ERC-20 token transfers
+\end{enumerate}
+
+\pagebreak
+\section{Architectural Features and Security}
+
+\subsection{Group Locking Mechanism}
+A `Group` struct with an `isLocked` state, controlled by `onlyWhenUnlocked` modifier, prevents state changes (e.g., adding members) during critical operations like debt simplification. This ensures data consistency.
+\begin{lstlisting}[language=Solidity]
+modifier onlyWhenUnlocked(uint256 gid) {
+    require(!groups[gid].isLocked, "Group is locked");
+    _;
+}
+\end{lstlisting}
+
+\subsection{Off-Chain Calculation \& Commit-Verify Pattern}
+Debt simplification runs off-chain for gas efficiency. Integrity is ensured by a commit-verify pattern:
+\begin{itemize}
+  \item \textbf{Greedy Algorithm}: A quadratic-time ($O(n^2)$) greedy algorithm iteratively cancels pairwise debts to produce simplified edges based on the Splitwise specification.
+  \item \textbf{Future Optimization}: A more advanced data-structure-aware approach (e.g., maintaining max-heap and min-heap views over creditor/debtor net balances) could asymptotically approach $O(n \log n)$ because heap-based priority queues support $\log n$ inserts/extracts.
+    Coordinating two heaps would let the off-chain simplifier repeatedly match the largest creditor with the largest debtor, emit a transfer, update both heaps, and stop once residual balances drop below a tolerance threshold.
+    The on-chain verifier would still only need to validate at most $n$ signed-balance edges, so gas exposure remains bounded while the off-chain workload scales more gracefully as group size grows.\footnote{\url{https://en.wikipedia.org/wiki/Priority_queue}}
+    \item \textbf{Commit Phase}: A `keccak256` hash of the simplified `edges` data is committed on-chain.
+    \begin{lstlisting}[language=Solidity]
+function commitSimplification(bytes32 edgesHash) public {
+    submittedSimplifications[edgesHash] = true;
+}
+    \end{lstlisting}
+    \item \textbf{Apply Phase}: `applySimplification` verifies submitted edges against the committed hash before updating debts, preventing tampering.
+\end{itemize}
+\subsection{Expense Hashing and Salting}
+To ensure the integrity and uniqueness of every expense registered, the system employs a cryptographic salting mechanism. Each Group struct contains an expenseNonce, which is an incrementing counter unique to that group. This nonce is included in the data that is hashed to create the unique expenseHash for each transaction.
+
+\begin{lstlisting}[language=Solidity]
+// The expenseNonce acts as a salt in the hashing process.
+bytes32 expenseHash = keccak256(abi.encode(ExpenseData({
+...
+nonce: groups[gid].expenseNonce++
+})));
+\end{lstlisting}
+\subsection{Reentrancy Protection}
+Critical functions (\texttt{settleDebt}, \texttt{mint}) use OpenZeppelin's `ReentrancyGuard`. This prevents re-entry attacks, safeguarding against unauthorized fund transfers and ensuring function atomicity.
+\begin{lstlisting}[language=Solidity]
+function settleDebt() public nonReentrant { ... }
+function mint() public payable nonReentrant { ... }
+\end{lstlisting}
+
+\subsection{SafeERC20 Integration}
+OpenZeppelin's `SafeERC20` library is integrated for all ERC-20 token interactions. This provides secure wrappers for token functions, mitigating common vulnerabilities and ensuring reliable transfers.
+\begin{lstlisting}[language=Solidity]
+using SafeERC20 for IERC20;
+// ...
+token.safeTransferFrom(msg.sender, creditor, amount);
+\end{lstlisting}
+
+\subsection{Data Structures and Optimization}
+Data management utilizes `uint256` for amounts and custom `structs` (e.g., `Group`) for organized data storage. Structs help prevent "stack too deep" errors and can optimize storage packing. `unchecked` arithmetic further improves gas efficiency.
+\begin{lstlisting}[language=Solidity]
+struct Group {
+    address[] members;
+    mapping(address => bool) isMember;
+    bytes32 debtGraphHash;
+    uint256 expenseNonce;
+    bool isLocked;
+}
+mapping(uint256 => mapping(address => mapping(address => uint256))) public debts;
+\end{lstlisting}
+
+\section{Key Security Aspects and Controls}
+\begin{itemize}
+    \item \textbf{Arithmetic Over/Underflow}: Mitigated by Solidity 0.8.28's built-in checks, with `unchecked` blocks reserved for provably safe operations.
+    \item \textbf{Phishing via \texttt{tx.origin}}: Prevented by zero usage of \texttt{tx.origin} and strict \texttt{msg.sender} authentication.
+    \item \textbf{Front-Running}: While expense registration faces MEV risk, debt simplification utilizes a commit-reveal scheme for control.
+  \item \textbf{Gas Limit DoS}: Controlled by a 50-member group size cap and the bounded $O(n^2)$ simplification workload.
+    \item \textbf{Timestamp Attacks}: Not applicable, as no time-dependent logic exists within the contract.
+\end{itemize}
+\pagebreak
+\section{Gas Cost Evaluation}
+Hardhat testing provided insights into the gas efficiency of `Splitwise` and `TrustToken` contracts.
+
+\section{Deployment and Core Operations}
+\begin{itemize}
+    \item \textbf{Deployment Addresses}: `TrustToken` at `0x5Fb...`, `Splitwise` at `0xe7f...`.
+    \item \textbf{Deployment Costs}: `Splitwise` averaged 1.85M gas (1.9\% block limit), `TrustToken` 0.63M gas (0.6\% block limit).
+\end{itemize}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Operation} & \textbf{Min Gas} & \textbf{Max Gas} & \textbf{Avg Gas} \\
+\midrule
+Group Creation & - & - & 156,967 \\
+Invite Member & 79,932 & 79,944 & 79,941 \\
+Register Expense & 61,607 & 132,687 & 93,280 \\
+Commit Simplification & - & - & 72,966 \\
+Apply Simplification & 96,488 & 1,426,696 & 366,582 \\
+Settle Debt & 48,972 & 50,376 & 50,090 \\
+Token Approval & 46,371 & 46,683 & 46,664 \\
+Token Minting & 53,083 & 70,183 & 55,856 \\
+\bottomrule
+\end{tabular}
+\caption{Detailed Gas Costs for Key Operations}
+\label{tab:gas_costs_summary}
+\end{table}
+
+\section{Layer-2 Deployment Outlook}
+While the current prototype targets Ethereum mainnet compatibility, even routine interactions can become cost-prohibitive when base fees spike.
+Ethereum's ecosystem now includes "Ethereum-backed" layer-2 networks where the observed average transaction cost is roughly \$0.002 compared to \$0.14 on layer 1, with many rollups advertising around \$0.01 user-facing fees.\footnote{\url{https://ethereum.org/en/layer-2/}}
+Migrating the Splitwise contracts to an optimistic-rollup chain (e.g., Base or OP Mainnet) would therefore reduce the per-call cost of `applySimplification` by two orders of magnitude without sacrificing Ethereum's settlement guarantees.
+Operationally, this migration requires only redeploying the contracts plus updating the Hardhat network configuration and addresses consumed by the CLI scripts because the project already adheres to the EVM execution model.
+
+\section{Key Observations}
+\begin{itemize}
+    \item `applySimplification` shows high variability (96k-1.4M gas), reflecting its complexity based on the debt graph.
+    \item Routine operations like `inviteMember` (~80k gas) and `settleDebt` (~50k gas) are consistent and efficient.
+    \item The system effectively handles complex debt graphs with up to 20 members, demonstrated by stress tests (1.85s execution).
+\end{itemize}
+
+\begin{figure}[htp]
+  \centering
+  \includegraphics[width=\textwidth]{images/image.png}
+  \caption{Gas Consumption Report from Hardhat Testing}
+  \label{fig:gasreport}
+\end{figure}
+
+\chapter{User Manual}
+This section outlines deployment and interaction with the TRUST Splitwise contracts using the provided Hardhat scripts.
+
+\section{Deployment}
+Run the following commands in sequence to deploy and set up the system on a local network:
+\begin{lstlisting}[language=bash]
+npx hardhat run scripts/deploy.js           --network localhost
+npx hardhat run scripts/create_group.js     --network localhost
+npx hardhat run scripts/add_expense.js      --network localhost
+npx hardhat run scripts/simplify_debts.js   --network localhost
+npx hardhat run scripts/check_balance.js    --network localhost
+npx hardhat run scripts/cleanup.js          --network localhost
+\end{lstlisting}
+\noindent
+
+
+\section{Interaction}
+Each script invokes the corresponding smart‑contract functions as follows:
+\begin{itemize}
+  \item \textbf{deploy.js}  
+    \begin{itemize}
+      \item Deploys \texttt{TrustToken} (mintable ERC‑20)
+      \item Deploys \texttt{Splitwise} (expense manager)
+    \end{itemize}
+  \item \textbf{create\_group.js}  
+    \begin{itemize}
+      \item Calls \texttt{splitwise.createGroup()} → emits \texttt{GroupCreated}
+    \end{itemize}
+  \item \textbf{add\_expense.js}  
+    \begin{itemize}
+      \item Invokes \texttt{splitwise.inviteMember()} (to add participants)
+      \item Mints via \texttt{trustToken.mint()}
+      \item Approves via \texttt{trustToken.approve()}
+      \item Logs an expense with \texttt{splitwise.registerExpense()}
+    \end{itemize}
+  \item \textbf{simplify\_debts.js}  
+    \begin{itemize}
+      \item Off‑chain computes simplified edges
+      \item Calls \texttt{splitwise.commitSimplification()}
+      \item Calls \texttt{splitwise.applySimplification()}
+    \end{itemize}
+  \item \textbf{check\_balance.js}  
+    \begin{itemize}
+      \item Reads each user’s token balance via \texttt{trustToken.balanceOf()}
+    \end{itemize}
+  \item \textbf{cleanup.js}  
+    \begin{itemize}
+      \item Removes \texttt{tmp-contract-addresses.json} to reset for future runs
+    \end{itemize}
+\end{itemize}
+
+\section{End‑to‑End Scenario at a Glance}
+\begin{enumerate}[leftmargin=1em]
+  \item Suranjan creates group → invites Kenny, Aashish, Natesh.  
+  \item Groceries: Suranjan logs 100 TRST exact split → Kenny~20, Aashish~30, Natesh~10.  
+  \item Gas: Kenny logs 50 TRST exact split → Aashish~20, Natesh~20.  
+  \item Simplify: off‑chain plan \{Aashish→Suranjan~50; Natesh→Kenny~20; Natesh→Suranjan~10\}.  
+  \item Commit \& apply on‑chain via two calls.  
+  \item Natesh settles his 20+10 debts → final balances verify zero.  
+\end{enumerate}
+\chapter{Conclusion}
+The Trust-Splitwise implementation achieves:
+\begin{itemize}
+  \item Secure expense tracking with cryptographic guarantees
+  \item Gas-efficient operations through optimization
+  \item Scalable architecture supporting 20+ members
+  \item Robust security against common vulnerabilities
+\end{itemize}
+
+\end{document}
