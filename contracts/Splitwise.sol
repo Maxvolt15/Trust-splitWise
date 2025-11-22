@@ -189,6 +189,8 @@ contract Splitwise is ReentrancyGuard {
         SimplifiedEdge[] calldata edges,
         bytes32 edgesHash
     ) external onlyGroupExists(gid) onlyMember(gid) {
+        // Ensure that the simplification has been pre-committed and that the provided
+        // edges match the committed hash. This prevents applying a non-verified simplification.
         require(
             submittedSimplifications[edgesHash], 
             "Hash not committed"
@@ -199,7 +201,10 @@ contract Splitwise is ReentrancyGuard {
         );
         
         Group storage g = groups[gid];
-        // Reset only non-zero debts to save gas
+
+        // To apply the new simplified debt graph, we first need to clear the existing debts.
+        // This is done by iterating through all possible pairs of members and setting their debt to 0.
+        // This is a gas-intensive operation, but it is necessary for correctness.
         for (uint i; i < g.members.length; ) {
             address u = g.members[i];
             for (uint j; j < g.members.length; ) {
@@ -212,7 +217,7 @@ contract Splitwise is ReentrancyGuard {
             unchecked { ++i; }
         }
         
-        // Apply new edges
+        // With the old debts cleared, we now apply the new, simplified debt edges.
         for (uint i; i < edges.length; ) {
             SimplifiedEdge calldata e = edges[i];
             require(g.isMember[e.debtor], "Invalid debtor");
@@ -222,6 +227,8 @@ contract Splitwise is ReentrancyGuard {
             unchecked { ++i; }
         }
         
+        // Finally, we update the group's debt graph hash to the new simplified hash
+        // and remove the pre-committed hash to prevent it from being used again.
         g.debtGraphHash = edgesHash;
         delete submittedSimplifications[edgesHash];
         emit DebtsSimplified(gid, edgesHash);
