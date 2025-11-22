@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @title Gas-Optimized Splitwise with State Commitments
 contract Splitwise is ReentrancyGuard {
@@ -14,12 +15,22 @@ contract Splitwise is ReentrancyGuard {
         bool exists;
         bytes32 debtGraphHash; // State commitment
         uint256 expenseNonce;  // Expense salting counter
+        
+        // New fields for scalability optimization
+        DebtPair[] activeDebtPairs; // Stores (debtor, creditor) pairs with non-zero debt
+        mapping(address => mapping(address => bool)) hasActiveDebt; // To check if a pair is in activeDebtPairs
     }
 
     struct SimplifiedEdge {
         address debtor;
         address creditor;
         uint256 amount;
+    }
+
+    // Define DebtPair struct at contract level
+    struct DebtPair {
+        address debtor;
+        address creditor;
     }
 
     IERC20 public immutable token;
@@ -141,7 +152,8 @@ contract Splitwise is ReentrancyGuard {
             require(g.isMember[p], "Not in group");
             
             if (p != msg.sender) {
-                debts[gid][p][msg.sender] += share;
+                uint256 currentDebt = debts[gid][p][msg.sender];
+                _updateDebt(gid, p, msg.sender, currentDebt + share);
             }
             unchecked { ++i; }
         }
@@ -168,9 +180,34 @@ contract Splitwise is ReentrancyGuard {
             address p = parts[i];
             require(g.isMember[p], "Not in group");
             if (p != msg.sender) {
-                debts[gid][p][msg.sender] += values[i];
+                uint256 currentDebt = debts[gid][p][msg.sender];
+                _updateDebt(gid, p, msg.sender, currentDebt + values[i]);
             }
             unchecked { ++i; }
+        }
+    }
+
+    /// @dev Internal helper to update a debt and manage activeDebtPairs
+    function _updateDebt(
+        uint256 gid,
+        address debtor,
+        address creditor,
+        uint256 amount
+    ) internal {
+        Group storage g = groups[gid];
+        bool wasActive = g.hasActiveDebt[debtor][creditor];
+
+        // Update the debt amount
+        debts[gid][debtor][creditor] = amount;
+
+        if (amount > 0 && !wasActive) {
+            // If debt is now positive and was not active, add to activeDebtPairs
+            g.activeDebtPairs.push(DebtPair(debtor, creditor));
+            g.hasActiveDebt[debtor][creditor] = true;
+        } else if (amount == 0 && wasActive) {
+            // If debt is now zero and was active, mark as inactive.
+            // Actual removal from activeDebtPairs happens during applySimplification's rebuild.
+            g.hasActiveDebt[debtor][creditor] = false;
         }
     }
 
@@ -202,28 +239,26 @@ contract Splitwise is ReentrancyGuard {
         
         Group storage g = groups[gid];
 
-        // To apply the new simplified debt graph, we first need to clear the existing debts.
-        // This is done by iterating through all possible pairs of members and setting their debt to 0.
-        // This is a gas-intensive operation, but it is necessary for correctness.
-        for (uint i; i < g.members.length; ) {
-            address u = g.members[i];
-            for (uint j; j < g.members.length; ) {
-                address v = g.members[j];
-                if (debts[gid][u][v] > 0) {
-                    debts[gid][u][v] = 0;
-                }
-                unchecked { ++j; }
-            }
+        // Clear existing debts using activeDebtPairs
+        for (uint i; i < g.activeDebtPairs.length; ) {
+            DebtPair storage dp = g.activeDebtPairs[i];
+            debts[gid][dp.debtor][dp.creditor] = 0;
+            g.hasActiveDebt[dp.debtor][dp.creditor] = false;
             unchecked { ++i; }
         }
+        // Clear the array of active debt pairs
+        delete g.activeDebtPairs;
         
-        // With the old debts cleared, we now apply the new, simplified debt edges.
+        // Apply new, simplified debt edges and repopulate activeDebtPairs
         for (uint i; i < edges.length; ) {
             SimplifiedEdge calldata e = edges[i];
             require(g.isMember[e.debtor], "Invalid debtor");
             require(g.isMember[e.creditor], "Invalid creditor");
             require(e.debtor != e.creditor, "Self-debt not allowed");
+            
             debts[gid][e.debtor][e.creditor] = e.amount;
+            g.activeDebtPairs.push(DebtPair(e.debtor, e.creditor));
+            g.hasActiveDebt[e.debtor][e.creditor] = true;
             unchecked { ++i; }
         }
         
@@ -260,27 +295,5 @@ contract Splitwise is ReentrancyGuard {
         // Safe ERC-20 transfer
         token.safeTransferFrom(msg.sender, creditor, amount);
         emit DebtSettled(gid, msg.sender, creditor, amount);
-    }
-}
-
-library SafeERC20 {
-    function safeTransferFrom(
-        IERC20 token,
-        address from,
-        address to,
-        uint256 value
-    ) internal {
-        (bool success, bytes memory data) = address(token).call(
-            abi.encodeWithSelector(
-                token.transferFrom.selector, 
-                from, 
-                to, 
-                value
-            )
-        );
-        require(
-            success && (data.length == 0 || abi.decode(data, (bool))),
-            "Transfer failed"
-        );
     }
 }

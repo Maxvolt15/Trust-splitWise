@@ -20,14 +20,5 @@ contract TrustToken is ERC20, ReentrancyGuard {
         _mint(msg.sender, tokens);
     }
 
-    // Add standard ERC20 transferFrom implementation
-    function transferFrom(address sender, address recipient, uint256 amount) 
-        public virtual override returns (bool) 
-    {
-        _transfer(sender, recipient, amount);
-        uint256 currentAllowance = allowance(sender, _msgSender());
-        require(currentAllowance >= amount, "ERC20: insufficient allowance");
-        _approve(sender, _msgSender(), currentAllowance - amount);
-        return true;
-    }
+
 }
